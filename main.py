@@ -22,6 +22,9 @@ ASSETS        = "assets"
 WINDOW_NAME   = "Rock Paper Scissors AI"
 CHOICES       = ["Rock", "Paper", "Scissors"]
 WIN_SCORE     = 3
+DETECT_WINDOW = 2.0
+MIN_GESTURE_FRAMES = 12
+MIN_GESTURE_RATIO = 0.55
 
 # IMPORTANT FIX
 pygame.init()
@@ -91,6 +94,15 @@ def load_choice_img(name, size=(210, 210)):
 
 CHOICE_IMGS = {c: load_choice_img(c) for c in CHOICES}
 
+def load_menu_bg():
+    path = os.path.join(ASSETS, "menu_background.png")
+    if os.path.exists(path):
+        img = pygame.image.load(path).convert()
+        return pygame.transform.smoothscale(img, (WIDTH, HEIGHT))
+    return None
+
+MENU_BG = load_menu_bg()
+
 # ─────────── Fonts ───────────
 def font(size, bold=False):
     return pygame.font.SysFont("Segoe UI", size, bold=bold)
@@ -137,6 +149,11 @@ def draw_neon_panel(surf, rect, color, radius=16):
     pygame.draw.rect(panel, (*BG_CARD, 210), panel.get_rect(), border_radius=radius)
     surf.blit(panel, (rect[0], rect[1]))
     glow_rect(surf, color, rect, radius)
+
+def draw_button(surf, rect, text, color, font_obj=F_SMALL, radius=18):
+    draw_neon_panel(surf, rect, color, radius=radius)
+    draw_text(surf, text, font_obj, color, rect[0] + rect[2] // 2, rect[1] + rect[3] // 2)
+    return pygame.Rect(rect)
 
 def draw_progress_bar(surf, x, y, w, h, val, mx, color):
     bg = pygame.Surface((w, h), pygame.SRCALPHA)
@@ -271,6 +288,7 @@ def ai_choose(player_history):
 STATE_MENU      = "MENU"
 STATE_COUNTDOWN = "COUNTDOWN"
 STATE_DETECT    = "DETECT"
+STATE_NO_MOVE   = "NO_MOVE"
 STATE_REVEAL    = "REVEAL"
 STATE_RESULT    = "RESULT"
 STATE_GAMEOVER  = "GAMEOVER"
@@ -292,6 +310,10 @@ class RockPaperScissorsAI:
         self.result_timer = 0
         self.reveal_timer = 0
         self.reveal_frames = 40
+        self.no_move_timer = 0
+        self.menu_start_rect = None
+        self.menu_quit_rect = None
+        self.quit_rect = pygame.Rect(WIDTH - 150, 18, 120, 42)
 
     def reset_game(self):
         self.player_score = 0
@@ -306,6 +328,7 @@ class RockPaperScissorsAI:
         self.detect_start = 0
         self.detected_buf = []
         self.final_gesture = None
+        self.no_move_timer = 0
 
     def grab_frame(self):
         ret, frame = self.cap.read()
@@ -364,44 +387,18 @@ class RockPaperScissorsAI:
 
         draw_text(self.screen, f"Round {self.round_num}", F_TINY, GREY_LIGHT, WIDTH // 2, py + 10)
 
+    def draw_quit_button(self):
+        return draw_button(self.screen, self.quit_rect, "QUIT", RED_NEON, F_TINY, radius=18)
+
     def draw_menu(self):
         self.menu_tick += 1
-        t = self.menu_tick
+        if MENU_BG:
+            self.screen.blit(MENU_BG, (0, 0))
+        else:
+            self.screen.fill(BG_DARK)
 
-        draw_grid(self.screen)
-
-        for i, (rx, ry, col) in enumerate([
-            (200, 200, NEON_CYAN),
-            (900, 500, NEON_PINK),
-            (640, 100, NEON_GREEN)
-        ]):
-            r = 60 + int(10 * np.sin(t * 0.03 + i))
-            glow_circle(self.screen, col, (rx, ry), r)
-
-        y0 = 220 + int(8 * np.sin(t * 0.04))
-
-        draw_text(self.screen, "ROCK", F_HUGE, NEON_ORANGE, WIDTH // 2 - 240, y0)
-        draw_text(self.screen, "PAPER", F_HUGE, NEON_CYAN, WIDTH // 2, y0)
-        draw_text(self.screen, "SCISSORS", F_HUGE, NEON_GREEN, WIDTH // 2 + 260, y0)
-
-        draw_text(self.screen, "A R T I F I C I A L   I N T E L L I G E N C E",
-                  F_SMALL, NEON_PURPLE, WIDTH // 2, y0 + 75)
-
-        draw_text(self.screen, f"First to {WIN_SCORE} wins the match",
-                  F_MED, GOLD, WIDTH // 2, y0 + 130)
-
-        for i, c in enumerate(CHOICES):
-            xi = WIDTH // 2 - 280 + i * 280
-            img = CHOICE_IMGS[c]
-            r = img.get_rect(center=(xi, 490))
-            self.screen.blit(img, r)
-            glow_circle(self.screen, CHOICE_COLORS[c], (xi, 490), 118, width=3)
-            draw_text(self.screen, c.upper(), F_SMALL, CHOICE_COLORS[c], xi, 600)
-
-        bw, bh = 340, 64
-        bx, by = WIDTH // 2 - bw // 2, 640
-        draw_neon_panel(self.screen, (bx, by, bw, bh), NEON_GREEN, radius=32)
-        draw_text(self.screen, "PRESS SPACE TO START", F_MED, NEON_GREEN, WIDTH // 2, by + 32)
+        self.menu_start_rect = pygame.Rect(410, 440, 460, 98)
+        self.menu_quit_rect = pygame.Rect(410, 556, 460, 88)
 
     def draw_countdown(self, cam_surf, gesture, lm_list):
         self.draw_camera(340, 150, 600, 450, cam_surf, gesture, lm_list)
@@ -424,7 +421,7 @@ class RockPaperScissorsAI:
 
     def draw_detect(self, cam_surf, gesture, lm_list):
         elapsed = time.time() - self.detect_start
-        window = 1.8
+        window = DETECT_WINDOW
 
         self.draw_camera(340, 150, 600, 450, cam_surf, gesture, lm_list)
 
@@ -434,15 +431,30 @@ class RockPaperScissorsAI:
         prog = min(elapsed / window, 1.0)
         draw_progress_bar(self.screen, 440, 100, 400, 20, prog, 1, NEON_CYAN)
 
-        draw_text(self.screen, "SHOW YOUR MOVE!", F_MED, WHITE, WIDTH // 2, 620)
+        prompt = "SHOW YOUR MOVE!"
+        if not gesture:
+            prompt = "Choose Rock, Paper, or Scissors"
+        draw_text(self.screen, prompt, F_MED, WHITE, WIDTH // 2, 620)
+        draw_text(self.screen, "Keep your hand inside the camera box",
+                  F_TINY, GREY_LIGHT, WIDTH // 2, 660)
         self.draw_scoreboard()
 
         if elapsed >= window:
-            if self.detected_buf:
+            if len(self.detected_buf) >= MIN_GESTURE_FRAMES:
                 freq = {c: self.detected_buf.count(c) for c in CHOICES}
                 self.final_gesture = max(freq, key=freq.get)
+                if freq[self.final_gesture] / len(self.detected_buf) < MIN_GESTURE_RATIO:
+                    self.no_move_timer = time.time()
+                    self.detected_buf = []
+                    self.final_gesture = None
+                    self.state = STATE_NO_MOVE
+                    return
             else:
-                self.final_gesture = random.choice(CHOICES)
+                self.no_move_timer = time.time()
+                self.detected_buf = []
+                self.final_gesture = None
+                self.state = STATE_NO_MOVE
+                return
 
             self.player_choice = self.final_gesture
             self.ai_choice = ai_choose(self.player_history)
@@ -451,6 +463,24 @@ class RockPaperScissorsAI:
             self.round_num += 1
             self.reveal_timer = 0
             self.state = STATE_REVEAL
+
+    def draw_no_move(self, cam_surf, gesture, lm_list):
+        self.draw_camera(340, 150, 600, 450, cam_surf, gesture, lm_list)
+        self.draw_scoreboard()
+
+        bw, bh = 620, 92
+        bx = WIDTH // 2 - bw // 2
+        by = HEIGHT - 132
+        draw_neon_panel(self.screen, (bx, by, bw, bh), NEON_ORANGE, radius=24)
+        draw_text(self.screen, "NO MOVE DETECTED", F_MED, NEON_ORANGE, WIDTH // 2, by + 30)
+        draw_text(self.screen, "Please choose Rock, Paper, or Scissors",
+                  F_SMALL, WHITE, WIDTH // 2, by + 65)
+
+        if time.time() - self.no_move_timer > 2.0:
+            self.detected_buf = []
+            self.final_gesture = None
+            self.state = STATE_COUNTDOWN
+            self.cd_start = time.time()
 
     def draw_choice_card(self, x, y, choice, label, color, t):
         w, h = 240, 300
@@ -575,7 +605,7 @@ class RockPaperScissorsAI:
                     running = False
 
                 if ev.type == pygame.KEYDOWN:
-                    if ev.key == pygame.K_ESCAPE:
+                    if ev.key in (pygame.K_ESCAPE, pygame.K_q):
                         running = False
 
                     if ev.key == pygame.K_SPACE and self.state == STATE_MENU:
@@ -583,6 +613,22 @@ class RockPaperScissorsAI:
                         self.state = STATE_COUNTDOWN
                         self.cd_start = time.time()
                         play(SND_START)
+
+                if ev.type == pygame.MOUSEBUTTONDOWN and self.state == STATE_MENU:
+                    mx, my = ev.pos
+
+                    if self.menu_start_rect and self.menu_start_rect.collidepoint(mx, my):
+                        self.reset_game()
+                        self.state = STATE_COUNTDOWN
+                        self.cd_start = time.time()
+                        play(SND_START)
+
+                    if self.menu_quit_rect and self.menu_quit_rect.collidepoint(mx, my):
+                        running = False
+
+                if ev.type == pygame.MOUSEBUTTONDOWN and self.state not in (STATE_MENU, STATE_GAMEOVER):
+                    if self.quit_rect.collidepoint(ev.pos):
+                        running = False
 
                 if ev.type == pygame.MOUSEBUTTONDOWN and self.state == STATE_GAMEOVER:
                     mx, my = ev.pos
@@ -602,25 +648,35 @@ class RockPaperScissorsAI:
             elif self.state == STATE_COUNTDOWN:
                 draw_grid(self.screen)
                 self.draw_countdown(cam_surf, gesture, lm_list)
+                self.draw_quit_button()
 
             elif self.state == STATE_DETECT:
                 draw_grid(self.screen)
                 self.draw_detect(cam_surf, gesture, lm_list)
+                self.draw_quit_button()
+
+            elif self.state == STATE_NO_MOVE:
+                draw_grid(self.screen)
+                self.draw_no_move(cam_surf, gesture, lm_list)
+                self.draw_quit_button()
 
             elif self.state == STATE_REVEAL:
                 draw_grid(self.screen)
                 self.draw_scoreboard()
                 self.draw_reveal(cam_surf, gesture, lm_list)
                 update_particles(self.screen)
+                self.draw_quit_button()
 
             elif self.state == STATE_RESULT:
                 draw_grid(self.screen)
                 self.draw_result(cam_surf, gesture, lm_list)
+                self.draw_quit_button()
 
             elif self.state == STATE_GAMEOVER:
                 play_rect, quit_rect = self.draw_gameover()
 
-            scanlines(self.screen)
+            if self.state != STATE_MENU:
+                scanlines(self.screen)
             pygame.display.flip()
             self.clock.tick(60)
 
