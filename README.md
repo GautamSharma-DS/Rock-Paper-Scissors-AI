@@ -93,7 +93,7 @@ Rock-Paper-Scissors-AI/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-username/Rock-Paper-Scissors-AI.git
+git clone https://github.com/GautamSharma-DS/Rock-Paper-Scissors-AI.git
 cd Rock-Paper-Scissors-AI
 ```
 
